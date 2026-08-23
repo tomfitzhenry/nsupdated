@@ -101,7 +101,7 @@ go test ./...
   exercising adds, deletes, prerequisites, error codes, TTLs, TXT escaping,
   and AXFR.
 - A NixOS VM test (`vm-tests/axfrddns.nix`, part of `nix flake check`)
-  exercises the whole deployment: `nsupdate(1)` sends an RFC 2136 update
-  through a TCP-to-unix socket bridge into nsupdated, whose `AXFRDDNS`
-  provider applies it to a local Knot DNS primary, and `dig` verifies the
-  record.
+  exercises the whole deployment over `nsupdate(1)` and a live Knot DNS
+  primary: adds, deletes, RRset replacements, and prerequisite successes and
+  failures (`NXDOMAIN`, `NXRRSET`), with `dig` verifying both knotd and an
+  AXFR through nsupdated.

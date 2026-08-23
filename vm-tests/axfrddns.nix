@@ -107,5 +107,66 @@ in
     machine.wait_until_succeeds(
       "dig @127.0.0.1 -p 5353 example.com AXFR +noall +answer | grep -q 'www.example.com.\\s*300\\s*IN\\s*A\\s*1.2.3.4'"
     )
+
+    # An RRset grows: a second address is added to www.example.com.
+    machine.succeed(
+      "printf 'server 127.0.0.1 5353\\nzone example.com.\\nupdate add www.example.com. 300 A 5.6.7.8\\nsend\\n' | nsupdate -v"
+    )
+    machine.wait_until_succeeds(
+      "dig @127.0.0.1 www.example.com A +short | grep -q '^5.6.7.8$'"
+    )
+
+    # One value is deleted from the RRset; the other remains.
+    machine.succeed(
+      "printf 'server 127.0.0.1 5353\\nzone example.com.\\nupdate delete www.example.com. 300 A 1.2.3.4\\nsend\\n' | nsupdate -v"
+    )
+    machine.wait_until_succeeds(
+      "test \"$(dig @127.0.0.1 www.example.com A +short | grep -c .)\" = \"1\" && dig @127.0.0.1 www.example.com A +short | grep -q '^5.6.7.8$'"
+    )
+
+    # The RRset is replaced in a single update: the whole A RRset is deleted
+    # and a new value added.
+    machine.succeed(
+      "printf 'server 127.0.0.1 5353\\nzone example.com.\\nupdate delete www.example.com. A\\nupdate add www.example.com. 300 A 9.9.9.9\\nsend\\n' | nsupdate -v"
+    )
+    machine.wait_until_succeeds(
+      "test \"$(dig @127.0.0.1 www.example.com A +short | grep -c .)\" = \"1\" && dig @127.0.0.1 www.example.com A +short | grep -q '^9.9.9.9$'"
+    )
+
+    # A prerequisite satisfied by the live zone: the RRset exists with this
+    # value, so the update proceeds.
+    machine.succeed(
+      "printf 'server 127.0.0.1 5353\\nzone example.com.\\nprereq yxrrset www.example.com. A 9.9.9.9\\nupdate add prereq.example.com. 300 A 2.2.2.2\\nsend\\n' | nsupdate -v"
+    )
+    machine.wait_until_succeeds(
+      "dig @127.0.0.1 prereq.example.com A +short | grep -q '^2.2.2.2$'"
+    )
+
+    # A failed prerequisite: the name must be absent, but it is in use, so the
+    # update is rejected with NXDOMAIN and nothing is added. The update's
+    # non-zero exit is expected, so the rcode is checked on the captured
+    # output instead of the pipeline status.
+    machine.succeed(
+      "out=$(printf 'server 127.0.0.1 5353\\nzone example.com.\\nprereq nxdomain www.example.com.\\nupdate add notadded.example.com. 300 A 3.3.3.3\\nsend\\n' | nsupdate -v 2>&1) && exit 1 || true\n"
+      'echo "$out" | grep -q NXDOMAIN'
+    )
+    machine.succeed(
+      "! dig @127.0.0.1 notadded.example.com A +short | grep -q '^3.3.3.3$'"
+    )
+
+    # Likewise, an RRset-absence prerequisite fails with NXRRSET.
+    machine.succeed(
+      "out=$(printf 'server 127.0.0.1 5353\\nzone example.com.\\nprereq nxrrset www.example.com. A\\nupdate add notadded2.example.com. 300 A 4.4.4.4\\nsend\\n' | nsupdate -v 2>&1) && exit 1 || true\n"
+      'echo "$out" | grep -q NXRRSET'
+    )
+
+    # An AXFR through nsupdated reflects the deletes, the replacement, and the
+    # prerequisite-gated add.
+    machine.wait_until_succeeds(
+      "dig @127.0.0.1 -p 5353 example.com AXFR +noall +answer | grep -q 'www.example.com.\\s*300\\s*IN\\s*A\\s*9.9.9.9'"
+    )
+    machine.wait_until_succeeds(
+      "dig @127.0.0.1 -p 5353 example.com AXFR +noall +answer | grep -q 'prereq.example.com.\\s*300\\s*IN\\s*A\\s*2.2.2.2'"
+    )
   '';
 }
