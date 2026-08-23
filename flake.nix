@@ -7,7 +7,7 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      vendorHash = "sha256-jc1lzIAj+/mfRIXZVbBq6cysmHg9tk7aEmt40z1kZOs=";
+      vendorHash = "sha256-MOethmzQtLmjsnwIKdfTOKJcoZeFkrZ6G0h5wdM6bQI=";
       version = "0.1.0";
     in {
       packages = forAllSystems (system:

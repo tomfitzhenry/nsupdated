@@ -9,11 +9,8 @@ require (
 )
 
 require (
-	github.com/DisposaBoy/JsonConfigReader v0.0.0-20201129172854-99cf318d67e7 // indirect
-	github.com/TomOnTime/utfutil v1.0.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/gobwas/glob v0.2.4-0.20181002190808-e7a84e9525fe // indirect
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/qdm12/reprint v0.0.0-20200326205758-722754a53494 // indirect

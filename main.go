@@ -7,17 +7,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"codeberg.org/miekg/dns"
-	"github.com/DNSControl/dnscontrol/v5/pkg/credsfile"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tomfitzhenry/nsupdated/internal/provider"
@@ -28,30 +29,23 @@ func main() {
 	var (
 		listen    string
 		credsFile string
-		credsName string
 		logLevel  slog.Level
 	)
 	flag.StringVar(&listen, "listen", "", "Unix domain socket to listen on")
-	flag.StringVar(&credsFile, "creds-file", "", "path to a DNSControl creds.json")
-	flag.StringVar(&credsName, "creds-name", "", "name of the provider entry within creds.json")
+	flag.StringVar(&credsFile, "creds-file", "", "path to a JSON provider config")
 	flag.TextVar(&logLevel, "log-level", slog.LevelInfo, "log level (debug, info, warn, error)")
 	flag.Parse()
 
-	if listen == "" || credsFile == "" || credsName == "" {
+	if listen == "" || credsFile == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
-	configs, err := credsfile.LoadProviderConfigs(credsFile)
+	config, err := loadConfig(credsFile)
 	if err != nil {
-		slog.Error("loading creds", "err", err)
-		os.Exit(1)
-	}
-	config, ok := configs[credsName]
-	if !ok {
-		slog.Error("creds.json has no such entry", "file", credsFile, "name", credsName)
+		slog.Error("loading config", "file", credsFile, "err", err)
 		os.Exit(1)
 	}
 
@@ -104,4 +98,24 @@ func main() {
 	}
 	os.Remove(listen)
 	slog.Info("done")
+}
+
+// loadConfig reads a provider config JSON object. Values of the form $ENV_VAR
+// are replaced with the environment variable's value, so secrets need not live
+// in the file.
+func loadConfig(path string) (map[string]string, error) {
+	dat, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var config map[string]string
+	if err := json.Unmarshal(dat, &config); err != nil {
+		return nil, err
+	}
+	for k, v := range config {
+		if strings.HasPrefix(v, "$") {
+			config[k] = os.Getenv(v[1:])
+		}
+	}
+	return config, nil
 }

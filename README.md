@@ -15,15 +15,16 @@ socket, for example with [ghostunnel](https://github.com/ghostunnel/ghostunnel).
 
 ## Usage
 
-The provider is configured with a DNSControl [`creds.json`](https://dnscontrol.org/js/creds/):
+The provider is configured with a JSON object carrying the provider's
+credentials. The `TYPE` field selects the DNSControl provider; other fields are
+the provider's credential keys, and a value of the form `$VAR` is replaced with
+the `VAR` environment variable:
 
 ```json
 {
-  "mythicbeasts": {
-    "TYPE": "MYTHICBEASTS",
-    "keyID": "...",
-    "secret": "$MYTHICBEASTS_SECRET"
-  }
+  "TYPE": "MYTHICBEASTS",
+  "keyID": "...",
+  "secret": "$MYTHICBEASTS_SECRET"
 }
 ```
 
@@ -31,14 +32,12 @@ The provider is configured with a DNSControl [`creds.json`](https://dnscontrol.o
 nsupdated \
   -listen /run/nsupdated.sock \
   -creds-file /etc/nsupdated/creds.json \
-  -creds-name mythicbeasts \
   -log-level info
 ```
 
 - `-listen`: the Unix domain socket to listen on. A stale socket from a
   previous run is removed on startup and on shutdown.
-- `-creds-file`: path to a DNSControl `creds.json`.
-- `-creds-name`: the name of the provider entry within `creds.json`.
+- `-creds-file`: path to the JSON provider config.
 - `-log-level`: one of `debug`, `info`, `warn`, `error`. Requests are logged
   at `debug`.
 

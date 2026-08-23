@@ -49,10 +49,8 @@ in
     '';
 
     environment.etc."nsupdated/creds.json".text = builtins.toJSON {
-      axfrddns = {
-        TYPE = "AXFRDDNS";
-        master = "127.0.0.1";
-      };
+      TYPE = "AXFRDDNS";
+      master = "127.0.0.1";
     };
 
     systemd.services.nsupdated = {
@@ -60,7 +58,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "knot.service" ];
       serviceConfig = {
-        ExecStart = "${nsupdated}/bin/nsupdated -listen /run/nsupdated.sock -creds-file /etc/nsupdated/creds.json -creds-name axfrddns -log-level debug";
+        ExecStart = "${nsupdated}/bin/nsupdated -listen /run/nsupdated.sock -creds-file /etc/nsupdated/creds.json -log-level debug";
         Restart = "on-failure";
       };
     };

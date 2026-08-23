@@ -27,7 +27,7 @@ func New(p providers.DNSServiceProvider) *Records {
 }
 
 // NewFromCreds returns a Records backed by a fresh provider constructed from a
-// DNSControl creds.json entry. The type is taken from the entry's TYPE field.
+// provider config map. The type is taken from the config's TYPE field.
 func NewFromCreds(config map[string]string) (*Records, error) {
 	p, err := providers.CreateDNSProvider("", config, nil)
 	if err != nil {
