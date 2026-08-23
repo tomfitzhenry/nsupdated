@@ -4,6 +4,7 @@ package rfc2136
 
 import (
 	"context"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"strings"
@@ -29,22 +30,29 @@ type Handler struct {
 	Records Records
 	Logger  *slog.Logger
 
-	// zoneLocks serialize updates per zone: each update is a whole-zone
-	// read-modify-write cycle against the provider, so two concurrent updates
-	// to the same zone would clobber each other.
-	zoneLocks sync.Map // zone -> *sync.Mutex
+	// zones serialize updates per zone (see lockZone).
+	zones [256]sync.Mutex
 }
 
-// lockZone blocks until the zone is free for another update.
+// lockZone blocks until the zone is free for another update. Each update is a
+// whole-zone read-modify-write cycle against the provider, so concurrent
+// updates to the same zone would clobber each other. A fixed set of stripes
+// bounds memory regardless of how many distinct zones are updated; zones that
+// collide on a stripe are serialized, which only costs a little concurrency.
 func (h *Handler) lockZone(zone string) {
-	m, _ := h.zoneLocks.LoadOrStore(zone, &sync.Mutex{})
-	m.(*sync.Mutex).Lock()
+	h.zones[h.stripe(zone)].Lock()
 }
 
 // unlockZone is the inverse of lockZone.
 func (h *Handler) unlockZone(zone string) {
-	m, _ := h.zoneLocks.Load(zone)
-	m.(*sync.Mutex).Unlock()
+	h.zones[h.stripe(zone)].Unlock()
+}
+
+// stripe hashes a zone to a lock stripe.
+func (h *Handler) stripe(zone string) uint8 {
+	f := fnv.New32a()
+	f.Write([]byte(zone))
+	return uint8(f.Sum32() % uint32(len(h.zones)))
 }
 
 func (h *Handler) logf(level slog.Level, msg string, args ...any) {
@@ -62,7 +70,7 @@ func (h *Handler) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		h.logf(slog.LevelError, "unpack request", "err", err)
 		m := dnsutil.SetReply(new(dns.Msg), r)
 		m.Rcode = dns.RcodeFormatError
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 
@@ -87,13 +95,13 @@ func (h *Handler) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	case dns.OpcodeQuery:
 		h.serveQuery(ctx, w, r)
 	default:
-		reply(w, refuse(r))
+		h.reply(w, refuse(r))
 	}
 }
 
 func (h *Handler) serveQuery(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Question) != 1 {
-		reply(w, refuse(r))
+		h.reply(w, refuse(r))
 		return
 	}
 	switch dns.RRToType(r.Question[0]) {
@@ -102,7 +110,7 @@ func (h *Handler) serveQuery(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	case dns.TypeSOA:
 		h.serveSOA(w, r)
 	default:
-		reply(w, refuse(r))
+		h.reply(w, refuse(r))
 	}
 }
 
@@ -110,7 +118,7 @@ func (h *Handler) serveSOA(w dns.ResponseWriter, r *dns.Msg) {
 	m := dnsutil.SetReply(new(dns.Msg), r)
 	m.Authoritative = true
 	m.Answer = []dns.RR{soa(dnsutil.Canonical(r.Question[0].Header().Name))}
-	reply(w, m)
+	h.reply(w, m)
 }
 
 func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
@@ -121,7 +129,7 @@ func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 		m := dnsutil.SetReply(new(dns.Msg), r)
 		m.Authoritative = true
 		m.Rcode = dns.RcodeServerFailure
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 
@@ -160,14 +168,14 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 
 	if len(r.Question) != 1 {
 		m.Rcode = dns.RcodeFormatError
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 	q := r.Question[0]
 	zone := dnsutil.Canonical(q.Header().Name)
 	if q.Header().Class != dns.ClassINET {
 		m.Rcode = dns.RcodeRefused
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 
@@ -181,7 +189,7 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 	if err != nil {
 		h.logf(slog.LevelError, "update get records", "zone", zone, "err", err)
 		m.Rcode = dns.RcodeServerFailure
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 
@@ -189,22 +197,22 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 
 	if rcode := evalPrereqs(zone, model, r.Answer); rcode != dns.RcodeSuccess {
 		m.Rcode = rcode
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 	if rcode := applyUpdates(zone, model, r.Ns); rcode != dns.RcodeSuccess {
 		m.Rcode = rcode
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 	if err := model.commit(ctx, zone, provider); err != nil {
 		h.logf(slog.LevelError, "update commit", "zone", zone, "err", err)
 		m.Rcode = dns.RcodeServerFailure
-		reply(w, m)
+		h.reply(w, m)
 		return
 	}
 
-	reply(w, m)
+	h.reply(w, m)
 }
 
 // soa returns the synthesized zone SOA. DNS provider APIs generally never
@@ -232,11 +240,13 @@ func refuse(r *dns.Msg) *dns.Msg {
 	return m
 }
 
-func reply(w dns.ResponseWriter, m *dns.Msg) {
-	if err := m.Pack(); err != nil {
-		return
+// reply writes the message to the client. io.Copy routes to Msg.WriteTo, which
+// adds the stream length prefix; a failed write just means the client went
+// away.
+func (h *Handler) reply(w dns.ResponseWriter, m *dns.Msg) {
+	if _, err := io.Copy(w, m); err != nil {
+		h.logf(slog.LevelDebug, "write response", "err", err)
 	}
-	io.Copy(w, m)
 }
 
 // inZone reports whether name (a fully-qualified name) is within zone.
@@ -390,8 +400,7 @@ func rrHasData(rr dns.RR) bool {
 	if txt, ok := rr.(*dns.TXT); ok {
 		return len(txt.Txt) > 0
 	}
-	parts := strings.SplitN(rr.String(), "\t", 5)
-	return len(parts) == 5 && strings.TrimSpace(parts[4]) != ""
+	return strings.TrimSpace(rdataOf(rr)) != ""
 }
 
 // applyUpdates applies the update section (RFC 2136 section 2.5) to the model,

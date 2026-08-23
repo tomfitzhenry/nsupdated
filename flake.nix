@@ -8,13 +8,14 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       vendorHash = "sha256-jc1lzIAj+/mfRIXZVbBq6cysmHg9tk7aEmt40z1kZOs=";
+      version = "0.1.0";
     in {
       packages = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in {
           default = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) {
             pname = "nsupdated";
-            version = "0.1.0";
+            inherit version;
             src = ./.;
             inherit vendorHash;
           };
@@ -25,7 +26,7 @@
         in {
           default = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) {
             pname = "nsupdated";
-            version = "0.1.0";
+            inherit version;
             src = ./.;
             inherit vendorHash;
             # Run vet and the test suite instead of building the binary.

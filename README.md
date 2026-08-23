@@ -43,8 +43,8 @@ nsupdated \
   at `debug`.
 
 The zone to operate on comes from the client's message; there is no zone
-whitelist. The credential is not cached between requests: a fresh provider
-(and therefore a fresh provider login) is created per request.
+whitelist. A single provider instance is created at startup and shared across
+requests; the provider itself handles its login and bearer token.
 
 Any DNSControl provider that can read a whole zone (`get-zones`-style) works:
 for example `MYTHICBEASTS`, `CLOUDFLARE`, or `POWERDNS`. Only the providers
@@ -69,8 +69,7 @@ probe for the SOA before transferring work too.
 ## Design
 
 - Stateless: every request reads the zone from the provider; nothing is cached
-  (except the provider's own in-memory token handling, which is confined to the
-  per-request provider instance).
+  (except the provider's own in-memory token handling).
 - An update is evaluated against a fetched copy of the zone and committed as
   the difference. RRsets that only grew are appended; RRsets that were emptied
   are deleted; any other change atomically replaces the RRset, because most
