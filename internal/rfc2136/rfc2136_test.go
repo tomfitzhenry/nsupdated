@@ -2,6 +2,7 @@ package rfc2136
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -528,5 +529,43 @@ func TestUpdatesToDifferentZonesAreConcurrent(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("update never completed")
 		}
+	}
+}
+
+func TestAXFRChunking(t *testing.T) {
+	zone := "example.com."
+	answer := []dns.RR{soa(zone)}
+	for i := 0; i < 3000; i++ {
+		answer = append(answer, aRR(fmt.Sprintf("host%d.example.com.", i), "1.2.3.4"))
+	}
+	answer = append(answer, soa(zone))
+
+	envs := axfrEnvelopes(answer)
+	if len(envs) < 2 {
+		t.Fatalf("large zone should span multiple envelopes, got %d", len(envs))
+	}
+
+	var all []dns.RR
+	for i, e := range envs {
+		if len(e.Answer) == 0 {
+			t.Errorf("envelope %d is empty", i)
+		}
+		var size int
+		for _, rr := range e.Answer {
+			size += rr.Len()
+			all = append(all, rr)
+		}
+		if size > 60*1024 {
+			t.Errorf("envelope %d is %d bytes, over the 60 KiB message limit", i, size)
+		}
+	}
+	if len(all) != len(answer) {
+		t.Fatalf("envelopes hold %d RRs, want %d", len(all), len(answer))
+	}
+	if _, ok := all[0].(*dns.SOA); !ok {
+		t.Errorf("transfer must start with the opening SOA, got %T", all[0])
+	}
+	if _, ok := all[len(all)-1].(*dns.SOA); !ok {
+		t.Errorf("transfer must end with the closing SOA, got %T", all[len(all)-1])
 	}
 }

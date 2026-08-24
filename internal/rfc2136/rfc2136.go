@@ -173,10 +173,37 @@ func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 			h.logf(slog.LevelError, "axfr transfer out", "zone", zone, "err", err)
 		}
 	}()
-	env <- &dns.Envelope{Answer: answer}
+	for _, e := range axfrEnvelopes(answer) {
+		env <- e
+	}
 	close(env)
 	wg.Wait()
 	h.logf(slog.LevelDebug, "axfr served", "zone", zone, "records", len(records))
+}
+
+// axfrEnvelopes chunks a transfer's RRs into envelopes, each small enough to
+// fit in a single DNS message. A DNS-over-TCP message is framed by a 2-byte
+// length prefix, so one message can hold at most 64 KiB; sending a whole large
+// zone in one envelope would overflow it.
+func axfrEnvelopes(answer []dns.RR) []*dns.Envelope {
+	const maxEnvelope = 60 * 1024
+	var envelopes []*dns.Envelope
+	cur := make([]dns.RR, 0, 16)
+	size := 0
+	for _, rr := range answer {
+		n := rr.Len()
+		if len(cur) > 0 && size+n > maxEnvelope {
+			envelopes = append(envelopes, &dns.Envelope{Answer: cur})
+			cur = nil
+			size = 0
+		}
+		cur = append(cur, rr)
+		size += n
+	}
+	if len(cur) > 0 {
+		envelopes = append(envelopes, &dns.Envelope{Answer: cur})
+	}
+	return envelopes
 }
 
 func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
