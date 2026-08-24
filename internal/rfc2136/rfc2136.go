@@ -9,11 +9,21 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"codeberg.org/miekg/dns"
 	"codeberg.org/miekg/dns/dnsutil"
 	"codeberg.org/miekg/dns/rdata"
 )
+
+// readTimeout bounds a single provider read, so a hung provider can neither
+// pin a zone lock nor a connection forever. The write phase is deliberately
+// not bounded here: cancelling an in-flight apply could leave the zone
+// half-updated, and the provider's own HTTP client timeout already bounds it.
+const readTimeout = 60 * time.Second
+
+// axfrWriteTimeout bounds the whole outgoing transfer on a stalled client.
+const axfrWriteTimeout = 5 * time.Minute
 
 // Records is the provider interface the handler drives. SetRecords replaces
 // the whole zone: it diffs desired against actual and applies the difference.
@@ -123,7 +133,9 @@ func (h *Handler) serveSOA(w dns.ResponseWriter, r *dns.Msg) {
 
 func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
 	zone := dnsutil.Canonical(r.Question[0].Header().Name)
-	records, err := h.Records.GetRecords(ctx, zone)
+	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
+	records, err := h.Records.GetRecords(readCtx, zone)
+	cancel()
 	if err != nil {
 		h.logf(slog.LevelError, "axfr get records", "zone", zone, "err", err)
 		m := dnsutil.SetReply(new(dns.Msg), r)
@@ -146,6 +158,11 @@ func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	answer = append(answer, s)
 
 	w.Hijack()
+	// Bound the write so a client that stops reading cannot pin this goroutine
+	// (and its provider read) forever.
+	if conn := w.Conn(); conn != nil {
+		conn.SetWriteDeadline(time.Now().Add(axfrWriteTimeout))
+	}
 	env := make(chan *dns.Envelope)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -185,7 +202,9 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 	defer h.unlockZone(zone)
 
 	provider := h.Records
-	current, err := provider.GetRecords(ctx, zone)
+	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
+	current, err := provider.GetRecords(readCtx, zone)
+	cancel()
 	if err != nil {
 		h.logf(slog.LevelError, "update get records", "zone", zone, "err", err)
 		m.Rcode = dns.RcodeServerFailure
