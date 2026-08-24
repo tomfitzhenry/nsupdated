@@ -54,6 +54,10 @@ func main() {
 
 	// Remove a stale socket left by a previous run.
 	os.Remove(listen)
+	// Create the socket with owner-only permissions (0700): it is the trust
+	// boundary of this daemon, which performs no authentication itself.
+	// Restrictive umask also covers any other files this process creates.
+	syscall.Umask(0o077)
 	ln, err := net.Listen("unix", listen)
 	if err != nil {
 		slog.Error("listening", "socket", listen, "err", err)
