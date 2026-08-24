@@ -12,6 +12,10 @@ translating:
 
 It performs no authentication of its own: terminate mTLS in front of the
 socket, for example with [ghostunnel](https://github.com/ghostunnel/ghostunnel).
+The Unix socket itself is the trust boundary. It is created with owner-only
+permissions (`0700` via a restricted umask), so put it in a directory that
+only the service user can reach; anyone able to connect to the socket can
+update any zone the provider's credentials can reach.
 
 ## Usage
 
@@ -41,14 +45,15 @@ nsupdated \
 - `-log-level`: one of `debug`, `info`, `warn`, `error`. Requests are logged
   at `debug`.
 
-The zone to operate on comes from the client's message; there is no zone
-whitelist. A single provider instance is created at startup and shared across
-requests; the provider itself handles its login and bearer token.
+A single provider instance is created at startup and shared across requests;
+the provider itself handles its login and bearer token. The zone to operate on
+comes from the client's message; there is no zone whitelist (see
+[Limitations](#limitations)).
 
-Any DNSControl provider that can read a whole zone (`get-zones`-style) works:
-for example `MYTHICBEASTS`, `CLOUDFLARE`, or `POWERDNS`. Only the providers
-imported into `internal/provider/provider.go` are available; add more there
-if you need them.
+Any DNSControl provider that can read and replace a whole zone works. The
+providers imported into `internal/provider/provider.go` are available
+(`MYTHICBEASTS`, `AXFRDDNS`); add an import there to enable others such as
+`CLOUDFLARE` or `POWERDNS`.
 
 ### Clients
 
@@ -78,7 +83,21 @@ probe for the SOA before transferring work too.
   prerequisites, `NXDOMAIN` for name prerequisites, `NOTZONE` for names outside
   the zone, `FORMERR` for malformed sections.
 - AXFR synthesizes the opening and closing SOA records, since DNS provider
-  APIs generally never expose SOA.
+  APIs generally never expose SOA. Large zones are streamed in several
+  messages, keeping each under the 64 KiB DNS-over-TCP message limit.
+
+## Limitations
+
+- The synthesized SOA is fabricated: its serial is always 1 and its timers are
+  fixed, and `nsupdated` sends no NOTIFY. Real DNS secondaries that poll the
+  SOA to detect changes will never see one, so this cannot serve as a primary
+  for BIND, Knot, or nsd secondaries; it is intended for on-demand transfers,
+  for example `nsdiff` against a live view.
+- There is no zone whitelist: the zone is taken from the client's message, so
+  the provider's credentials bound what can be updated. Guard the socket (see
+  above) accordingly.
+- There is no TSIG support; authenticate with mTLS in front of the socket
+  instead.
 
 ## Development
 
@@ -89,6 +108,11 @@ go test ./...
 
 `nix flake check` fetches the Go dependencies through `buildGoModule`'s
 `vendorHash`, so no `vendor/` directory is kept in the repo.
+
+The dependencies are deliberately current: `DNSControl` is pinned to a v5
+release candidate (its provider model is the backing store), and it pulls in
+the `codeberg.org/miekg/dns` fork that DNSControl v5 uses, rather than
+`github.com/miekg/dns`.
 
 ## Testing
 
