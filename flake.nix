@@ -18,6 +18,11 @@
             inherit version;
             src = ./.;
             inherit vendorHash;
+            meta = {
+              description = "RFC 2136 dynamic updates and AXFR over a Unix socket, backed by any DNSControl provider";
+              license = nixpkgs.lib.licenses.mit;
+              mainProgram = "nsupdated";
+            };
           };
         });
 
@@ -36,6 +41,11 @@
               go vet ./...
               go test ./...
             '';
+            meta = {
+              description = "RFC 2136 dynamic updates and AXFR over a Unix socket, backed by any DNSControl provider";
+              license = nixpkgs.lib.licenses.mit;
+              mainProgram = "nsupdated";
+            };
           };
 
           # End-to-end: nsupdate(1) updates a zone through nsupdated backed by
