@@ -67,8 +67,8 @@ update add www.example.com. 300 A 1.2.3.4
 send
 ```
 
-`nsupdated` answers plain SOA queries with a synthesized SOA, so clients that
-probe for the SOA before transferring work too.
+`nsupdated` answers plain SOA queries too, so clients that probe for the SOA
+before transferring work.
 
 ## Design
 
@@ -82,17 +82,19 @@ probe for the SOA before transferring work too.
 - Prerequisites map to the RFC 2136 response codes: `NXRRSET` for RRset
   prerequisites, `NXDOMAIN` for name prerequisites, `NOTZONE` for names outside
   the zone, `FORMERR` for malformed sections.
-- AXFR synthesizes the opening and closing SOA records, since DNS provider
-  APIs generally never expose SOA. Large zones are streamed in several
-  messages, keeping each under the 64 KiB DNS-over-TCP message limit.
+- AXFR uses the provider's own SOA when it exposes one (`AXFRDDNS` does; its
+  serial is managed by the backing primary), and otherwise synthesizes a
+  placeholder. Large zones are streamed in several messages, keeping each under
+  the 64 KiB DNS-over-TCP message limit.
 
 ## Limitations
 
-- The synthesized SOA is fabricated: its serial is always 1 and its timers are
-  fixed, and `nsupdated` sends no NOTIFY. Real DNS secondaries that poll the
-  SOA to detect changes will never see one, so this cannot serve as a primary
-  for BIND, Knot, or nsd secondaries; it is intended for on-demand transfers,
-  for example `nsdiff` against a live view.
+- The SOA is only as trustworthy as the provider. With `AXFRDDNS` the real SOA
+  is transferred, so secondaries that poll it see updates. With providers that
+  expose none (e.g. `MYTHICBEASTS`), the SOA is a placeholder with a constant
+  serial, so serial-based refresh will never trigger; `nsupdated` also sends no
+  NOTIFY. Use it for on-demand transfers, for example `nsdiff` against a live
+  view, rather than as a primary for BIND, Knot, or nsd secondaries.
 - There is no zone whitelist: the zone is taken from the client's message, so
   the provider's credentials bound what can be updated. Guard the socket (see
   above) accordingly.
