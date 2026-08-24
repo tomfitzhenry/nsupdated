@@ -7,9 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Fast: go vet and the unit/integration test suite. The VM integration test
-  # is slow, so it only runs on master (and on demand via workflow_dispatch);
-  # `nix flake check` runs everything locally.
+  # Fast: go vet and the unit/integration test suite.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -17,9 +15,10 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - run: nix build .#checks.x86_64-linux.default
 
+  # Slow (NixOS VM builds), so it runs on-demand and on every PR and master
+  # push. `nix flake check` runs everything locally.
   vm-test:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
