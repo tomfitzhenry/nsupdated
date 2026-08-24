@@ -118,16 +118,24 @@ func (h *Handler) serveQuery(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	case dns.TypeAXFR:
 		h.serveAXFR(ctx, w, r)
 	case dns.TypeSOA:
-		h.serveSOA(w, r)
+		h.serveSOA(ctx, w, r)
 	default:
 		h.reply(w, refuse(r))
 	}
 }
 
-func (h *Handler) serveSOA(w dns.ResponseWriter, r *dns.Msg) {
+func (h *Handler) serveSOA(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
+	zone := dnsutil.Canonical(r.Question[0].Header().Name)
+	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
+	records, err := h.Records.GetRecords(readCtx, zone)
+	cancel()
+	if err != nil {
+		h.logf(slog.LevelError, "soa get records", "zone", zone, "err", err)
+	}
+	soa, _ := soaOrSynthesized(zone, records)
 	m := dnsutil.SetReply(new(dns.Msg), r)
 	m.Authoritative = true
-	m.Answer = []dns.RR{soa(dnsutil.Canonical(r.Question[0].Header().Name))}
+	m.Answer = []dns.RR{soa}
 	h.reply(w, m)
 }
 
@@ -145,16 +153,12 @@ func (h *Handler) serveAXFR(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 		return
 	}
 
-	// RFC 5936 requires the transfer to begin and end with an SOA record.
-	s := soa(zone)
+	// RFC 5936 requires the transfer to begin and end with an SOA record. Use
+	// the provider's own SOA if it exposes one, so a real serial and timers
+	// flow through the transfer.
+	s, records := soaOrSynthesized(zone, records)
 	answer := []dns.RR{s}
-	for _, rr := range records {
-		// The SOA is synthesized; the provider's own SOA is not transferred.
-		if dns.RRToType(rr) == dns.TypeSOA {
-			continue
-		}
-		answer = append(answer, rr)
-	}
+	answer = append(answer, records...)
 	answer = append(answer, s)
 
 	w.Hijack()
@@ -239,6 +243,9 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return
 	}
 
+	// RFC 2136 updates never touch the zone SOA, and DNSControl's providers
+	// cannot write one, so keep it out of the diffed model.
+	_, current = soaOrSynthesized(zone, current)
 	model := newModel(current)
 
 	if rcode := evalPrereqs(zone, model, r.Answer); rcode != dns.RcodeSuccess {
@@ -261,14 +268,42 @@ func (h *Handler) serveUpdate(ctx context.Context, w dns.ResponseWriter, r *dns.
 	h.reply(w, m)
 }
 
-// soa returns the synthesized zone SOA. DNS provider APIs generally never
-// expose SOA records, so one is fabricated to satisfy RFC 5936 and clients
-// that probe for the SOA first.
-func soa(zone string) *dns.SOA {
+// soaOrSynthesized returns the SOA to present for zone: the provider's own
+// record if it exposes one, otherwise a synthesized placeholder.
+func soaOrSynthesized(zone string, records []dns.RR) (*dns.SOA, []dns.RR) {
+	var soa *dns.SOA
+	rest := make([]dns.RR, 0, len(records))
+	for _, rr := range records {
+		if s, ok := rr.(*dns.SOA); ok && soa == nil {
+			soa = s
+			continue
+		}
+		rest = append(rest, rr)
+	}
+	if soa == nil {
+		soa = synthesizeSOA(zone, rest)
+	}
+	return soa, rest
+}
+
+// synthesizeSOA builds a placeholder SOA for providers that expose none. The
+// serial is constant: without provider-managed state it cannot be both
+// monotonic and meaningful, and a fabricated serial could make a secondary
+// treat the zone as stale (RFC 1982) and keep old data. The primary NS is
+// taken from the zone's own apex NS record if present, so the SOA at least
+// names a real server.
+func synthesizeSOA(zone string, records []dns.RR) *dns.SOA {
+	ns := "ns." + zone
+	for _, rr := range records {
+		if n, ok := rr.(*dns.NS); ok && strings.ToLower(n.Header().Name) == zone {
+			ns = n.Ns
+			break
+		}
+	}
 	return &dns.SOA{
 		Hdr: dns.Header{Name: zone, Class: dns.ClassINET, TTL: 3600},
 		SOA: rdata.SOA{
-			Ns:      "ns." + zone,
+			Ns:      ns,
 			Mbox:    "hostmaster." + zone,
 			Serial:  1,
 			Refresh: 3600,

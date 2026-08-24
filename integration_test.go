@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 
 	"codeberg.org/miekg/dns"
 	"github.com/DNSControl/dnscontrol/v5/models"
+	"github.com/DNSControl/dnscontrol/v5/pkg/dnsrr"
 
 	"github.com/tomfitzhenry/nsupdated/internal/provider"
 	"github.com/tomfitzhenry/nsupdated/internal/rfc2136"
@@ -326,4 +328,45 @@ func TestIntegrationTXTWithQuotes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestIntegrationAXFRUsesProviderSOA checks that a provider exposing its own
+// SOA (like AXFRDDNS) has that SOA transferred, rather than a synthesized one.
+func TestIntegrationAXFRUsesProviderSOA(t *testing.T) {
+	sock, fake := startStack(t)
+
+	rc := soaRecordConfig(t, 42)
+	fake.mu.Lock()
+	fake.records = models.Records{rc}
+	fake.mu.Unlock()
+
+	rrs := axfr(t, sock, "example.com.")
+	first, firstOK := rrs[0].(*dns.SOA)
+	last, lastOK := rrs[len(rrs)-1].(*dns.SOA)
+	if !firstOK || !lastOK {
+		t.Fatalf("transfer must start and end with SOA, got %T and %T", rrs[0], rrs[len(rrs)-1])
+	}
+	if first.Serial != 42 || last.Serial != 42 {
+		t.Errorf("transfer SOA serials = %d and %d, want the provider's 42", first.Serial, last.Serial)
+	}
+	if first.Ns != "ns1.example.com." {
+		t.Errorf("SOA Ns = %q, want the provider's ns1.example.com.", first.Ns)
+	}
+}
+
+func soaRecordConfig(t *testing.T, serial uint32) *models.RecordConfig {
+	t.Helper()
+	rr, err := dns.New(fmt.Sprintf("example.com. 3600 IN SOA ns1.example.com. hostmaster.example.com. %d 3600 600 604800 3600", serial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc, err := models.NewDomainConfig("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := dnsrr.RRv2toRC(dc, rr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rc
 }

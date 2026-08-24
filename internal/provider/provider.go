@@ -36,8 +36,9 @@ func NewFromCreds(config map[string]string) (*Records, error) {
 	return New(p), nil
 }
 
-// GetRecords returns the zone's records. The SOA is filtered out: the handler
-// synthesizes it, so the provider's own SOA is not transferred.
+// GetRecords returns the zone's records, including the provider's own SOA if
+// it exposes one (the AXFRDDNS provider does; MYTHICBEASTS does not). The
+// handler separates the SOA from the update path, which never touches it.
 func (r *Records) GetRecords(ctx context.Context, zone string) ([]dns.RR, error) {
 	dc, err := models.NewDomainConfig(strings.TrimSuffix(zone, "."))
 	if err != nil {
@@ -47,13 +48,9 @@ func (r *Records) GetRecords(ctx context.Context, zone string) ([]dns.RR, error)
 	if err != nil {
 		return nil, err
 	}
-	var rrs []dns.RR
+	rrs := make([]dns.RR, 0, len(rcs))
 	for _, rc := range rcs {
-		rr := rc.ToRRv2()
-		if dns.RRToType(rr) == dns.TypeSOA {
-			continue
-		}
-		rrs = append(rrs, rr)
+		rrs = append(rrs, rc.ToRRv2())
 	}
 	return rrs, nil
 }

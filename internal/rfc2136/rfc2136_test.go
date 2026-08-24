@@ -534,11 +534,11 @@ func TestUpdatesToDifferentZonesAreConcurrent(t *testing.T) {
 
 func TestAXFRChunking(t *testing.T) {
 	zone := "example.com."
-	answer := []dns.RR{soa(zone)}
+	answer := []dns.RR{synthesizeSOA(zone, nil)}
 	for i := 0; i < 3000; i++ {
 		answer = append(answer, aRR(fmt.Sprintf("host%d.example.com.", i), "1.2.3.4"))
 	}
-	answer = append(answer, soa(zone))
+	answer = append(answer, synthesizeSOA(zone, nil))
 
 	envs := axfrEnvelopes(answer)
 	if len(envs) < 2 {
@@ -567,5 +567,78 @@ func TestAXFRChunking(t *testing.T) {
 	}
 	if _, ok := all[len(all)-1].(*dns.SOA); !ok {
 		t.Errorf("transfer must end with the closing SOA, got %T", all[len(all)-1])
+	}
+}
+
+func soaRR(t *testing.T, zone string, serial uint32, ns, mbox string) dns.RR {
+	t.Helper()
+	rr, err := dns.New(fmt.Sprintf("%s 3600 IN SOA %s %s %d 3600 600 604800 3600", zone, ns, mbox, serial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rr
+}
+
+func nsRR(zone, ns string) dns.RR {
+	rr, err := dns.New(zone + " 3600 IN NS " + ns)
+	if err != nil {
+		panic(err)
+	}
+	return rr
+}
+
+func TestSOAOrSynthesizedUsesProviderSOA(t *testing.T) {
+	zone := "example.com."
+	records := []dns.RR{
+		soaRR(t, zone, 42, "ns1.example.com.", "hostmaster.example.com."),
+		aRR("www.example.com.", "1.2.3.4"),
+	}
+	soa, rest := soaOrSynthesized(zone, records)
+	if soa.Serial != 42 || soa.Header().Name != zone {
+		t.Errorf("soa = %+v, want the provider's SOA with serial 42", soa)
+	}
+	if len(rest) != 1 || rest[0].Header().Name != "www.example.com." {
+		t.Errorf("rest = %v, want just the A record", rest)
+	}
+}
+
+func TestSynthesizedSOAUsesApexNS(t *testing.T) {
+	zone := "example.com."
+	records := []dns.RR{nsRR(zone, "ns1.example.com."), aRR("www.example.com.", "1.2.3.4")}
+	soa, _ := soaOrSynthesized(zone, records)
+	if soa.Ns != "ns1.example.com." {
+		t.Errorf("Ns = %q, want the apex NS target", soa.Ns)
+	}
+	if soa.Serial != 1 {
+		t.Errorf("serial = %d, want the constant placeholder 1", soa.Serial)
+	}
+}
+
+func TestSynthesizedSOAFallsBackToNsDotZone(t *testing.T) {
+	soa, _ := soaOrSynthesized("example.com.", nil)
+	if soa.Ns != "ns.example.com." {
+		t.Errorf("Ns = %q, want ns.example.com.", soa.Ns)
+	}
+}
+
+func TestSOAQueryReturnsProviderSOA(t *testing.T) {
+	recs := &fakeRecords{records: []dns.RR{
+		soaRR(t, "example.com.", 42, "ns1.example.com.", "hostmaster.example.com."),
+	}}
+	h := testHandler(recs)
+	u := dns.NewMsg("example.com.", dns.TypeSOA)
+	m := serve(t, h, u)
+	if m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %v, want success", m.Rcode)
+	}
+	if len(m.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(m.Answer))
+	}
+	soa, ok := m.Answer[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("answer = %T, want *dns.SOA", m.Answer[0])
+	}
+	if soa.Serial != 42 {
+		t.Errorf("serial = %d, want the provider's 42", soa.Serial)
 	}
 }
